@@ -13,3 +13,4 @@ build/
 dist/
 .venv/
 venv/
+.DS_Store
