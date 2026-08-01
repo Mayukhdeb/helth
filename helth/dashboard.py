@@ -109,37 +109,94 @@ _NORMAL_INK = "#5e5ce6"
 _ATHLETIC_INK = "#2a9648"
 
 
+# Captions sit in the bottom margin, stacked, measured in pixels from the
+# bottom of the plotting area so they never depend on the figure's height.
+_CAP_TOP_PX = 30    # clearance for the x-axis ticks before the first line
+_CAP_LINE_PX = 14
+_CAP_PAD_PX = 8
+
+
+def _add_caption(fig: go.Figure, text: str) -> None:
+    """Add a small grey caption below the plot, stacked under any earlier one.
+
+    The figure grows by exactly the space the caption needs, so captions never
+    eat into the plotting area. Must be called *after* the figure's layout is
+    set, since ``_layout`` resets both height and margins.
+    """
+    lines = sum(
+        1 for a in (fig.layout.annotations or ()) if a.name == "helth-caption"
+    )
+    fig.add_annotation(
+        name="helth-caption", text=text,
+        x=0, xref="paper", xanchor="left",
+        y=0, yref="paper", yanchor="top",
+        yshift=-(_CAP_TOP_PX + lines * _CAP_LINE_PX),
+        showarrow=False, align="left",
+        font=dict(size=9, color=_MUTED),
+    )
+    needed = _CAP_TOP_PX + (lines + 1) * _CAP_LINE_PX + _CAP_PAD_PX
+    current = fig.layout.margin.b or 0
+    if needed > current:
+        fig.update_layout(
+            margin_b=needed, height=(fig.layout.height or 230) + needed - current
+        )
+
+
+def _data_max(fig: go.Figure, axis: str) -> Optional[float]:
+    """Largest plotted value on ``axis`` ("x" or "y"), ignoring non-numerics."""
+    best: Optional[float] = None
+    for trace in fig.data:
+        values = getattr(trace, axis, None)
+        if values is None:
+            continue
+        for v in values:
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                continue
+            if f == f and (best is None or f > best):  # f == f skips NaN
+                best = f
+    return best
+
+
 def _add_baselines(
     fig: go.Figure, baseline: "MetricBaseline", *, axis: Optional[str] = None
 ) -> None:
-    """Shade the normal (indigo) and athletic (green) reference ranges."""
+    """Shade the normal (indigo) and athletic (green) reference ranges.
+
+    The ranges and their sources are named in a caption *below* the plot rather
+    than inside it — in-plot labels collided with the data (bars especially).
+    """
     axis = axis or baseline.axis
     specs = [
-        ("Normal", baseline.normal, _NORMAL_FILL, _NORMAL_INK, "top left"),
-        ("Athlete", baseline.athletic, _ATHLETIC_FILL, _ATHLETIC_INK, "top right"),
+        ("Normal", baseline.normal, _NORMAL_FILL, _NORMAL_INK),
+        ("Athlete", baseline.athletic, _ATHLETIC_FILL, _ATHLETIC_INK),
     ]
-    for name, band, fill, ink, pos in specs:
-        high = band.high if band.high is not None else band.low * 4
-        label = f"▎{band.label(name, baseline.unit)} · {short_ref(band.citation_key)}"
-        common = dict(
-            fillcolor=fill, line_width=0, layer="below",
-            annotation_text=label,
-            annotation_position=pos, annotation_font=dict(size=9, color=ink),
-        )
+    # Shapes count towards axis autorange, so an open-ended band ("≥10,000
+    # steps") must stop at the data — otherwise it stretches the axis and
+    # squashes the actual bars into the bottom of the plot.
+    top = _data_max(fig, axis)
+    keys: List[str] = []
+    for name, band, fill, ink in specs:
+        if band.high is not None:
+            high = band.high
+        else:
+            high = max(top, band.low * 1.05) if top is not None else band.low * 4
+        common = dict(fillcolor=fill, line_width=0, layer="below")
         if axis == "x":
             fig.add_vrect(x0=band.low, x1=high, **common)
         else:
             fig.add_hrect(y0=band.low, y1=high, **common)
+        keys.append(
+            f'<span style="color:{ink}">▮</span> '
+            f"{band.label(name, baseline.unit)} · {short_ref(band.citation_key)}"
+        )
+    _add_caption(fig, "&nbsp;&nbsp;&nbsp;".join(keys))
 
 
 def _ref_note(fig: go.Figure, text: str) -> None:
     """Add a small grey citation caption under a chart."""
-    fig.add_annotation(
-        text=text, x=0, xref="paper", xanchor="left",
-        y=-0.30, yref="paper", yanchor="top", showarrow=False, align="left",
-        font=dict(size=9, color=_MUTED),
-    )
-    fig.update_layout(margin=dict(b=52))
+    _add_caption(fig, text)
 
 
 # --- long-term trend figure (time-window + smoothing controls) -------------
@@ -178,10 +235,6 @@ def trend_figure(
 
     fig = go.Figure()
 
-    # Cited normal + athletic reference bands (drawn beneath the data).
-    # Each band annotation already names its source, so no extra note needed.
-    if baseline is not None:
-        _add_baselines(fig, baseline)
     # Raw layer, kept faint so the smoothed line reads clearly on top.
     if kind == "bars":
         fig.add_trace(
@@ -241,23 +294,22 @@ def trend_figure(
             x=0, xanchor="left", y=0.99, yref="container", yanchor="top",
             font=dict(size=14, color=_TEXT),
         ),
-        margin=dict(l=48, r=18, t=58, b=28),
+        margin=dict(l=48, r=18, t=72, b=28),
         updatemenus=[
             dict(
                 type="dropdown", direction="down", showactive=True,
-                active=default_active, x=1, xanchor="right", y=1.14, yanchor="top",
+                active=default_active, x=1, xanchor="right", y=1.03,
+                yanchor="bottom",  # grows upward into the margin, never the plot
                 pad=dict(r=2, t=2), bgcolor="#ececf0", bordercolor=_GRID,
                 font=dict(color=_TEXT, size=10), buttons=buttons,
             )
         ],
     )
+    # Reference bands go on after the layout, which resets height and margins.
+    if baseline is not None:
+        _add_baselines(fig, baseline)
     if note:
-        fig.add_annotation(
-            text=note, x=0, xref="paper", xanchor="left",
-            y=-0.22, yref="paper", yanchor="top", showarrow=False, align="left",
-            font=dict(size=9, color=_MUTED),
-        )
-        fig.update_layout(margin=dict(b=46))
+        _add_caption(fig, note)
     # Range-selector buttons only (no slider — the buttons + drag-zoom are
     # enough, and dropping the slider removes a chunk of vertical clutter).
     fig.update_xaxes(
@@ -272,7 +324,7 @@ def trend_figure(
             ],
             bgcolor="#ececf0", activecolor=_ACCENT, bordercolor=_GRID,
             font=dict(color=_TEXT, size=10), x=0, xanchor="left",
-            y=1.14, yanchor="top",
+            y=1.03, yanchor="bottom",
         ),
     )
     fig.update_yaxes(title_text=unit)
